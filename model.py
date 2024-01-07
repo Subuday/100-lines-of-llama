@@ -1,8 +1,10 @@
+import math
 from dataclasses import dataclass
 from typing import Optional
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 
 @dataclass
@@ -54,6 +56,73 @@ class RSMNorm(nn.Module):
         return self.weight * self._norm(x.float()).type_as(x)
 
 
+def repeat_kv(x: torch.Tensor, n_rep: int):
+    batch_size, seq_len, n_kv_heads, head = x.shape
+    if n_rep == 1:
+        return x
+    else:
+        # TODO: Investigate this operation
+        return (
+            x[:, :, :, None, :]
+            .expand(batch_size, seq_len, n_kv_heads, n_rep, head)
+            .reshape(batch_size, seq_len, n_kv_heads * n_rep, head)
+        )
+
+
+class SelfAttention(nn.Module):
+
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        self.n_kv_heads = args.n_kv_heads if args.n_kv_heads is not None else args.n_heads
+        self.n_heads_q = args.n_heads
+        self.n_rep = self.n_heads_q // self.n_kv_heads
+        self.head_dim = args.dim // args.n_heads
+
+        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
+
+        self.cache_k = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim))
+        self.cache_v = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim))
+
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor):
+        batch_size, seq_len, _ = x.shape
+
+        xq = self.wq(x)
+        xk = self.wk(x)
+        xv = self.wv(x)
+
+        xq = xq.view(batch_size, seq_len, self.n_heads_q, self.head_dim)
+        xk = xk.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+        xv = xv.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+
+        xq = apply_rotary_embeddings(xq, freqs_complex, device=x.device)
+        xk = apply_rotary_embeddings(xk, freqs_complex, device=x.device)
+
+        self.cache_k[:batch_size, start_pos:start_pos + seq_len] = xk
+        self.cache_v[:batch_size, start_pos:start_pos + seq_len] = xv
+
+        keys = self.cache_k[:batch_size, 0:start_pos + seq_len]
+        values = self.cache_v[:batch_size, 0:start_pos + seq_len]
+
+        # Repeat the heads of the K and V to reach the number of heads of Q
+        keys = repeat_kv(keys, self.n_rep)
+        values = repeat_kv(values, self.n_rep)
+
+        xq = xq.transpose(1, 2)
+        xk = keys.transpose(1, 2)
+        xv = values.transpose(1, 2)
+
+        scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
+        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+
+        output = torch.matmul(scores, xv)
+
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
+        return self.wo(output)
+
+
 class EncoderBlock(nn.Module):
 
     def __init__(self, args: ModelArgs):
@@ -72,7 +141,6 @@ class EncoderBlock(nn.Module):
         h = x + self.attention.forward(self.attention_norm(x), start_pos, freqs_complex)
         out = h + self.feed_forward.forward(self.ffn_norm(h))
         return out
-
 
 
 class Transformer(nn.Module):
