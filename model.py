@@ -42,7 +42,7 @@ def apply_rotary_embeddings(x: torch.Tensor, freqs_complex: torch.Tensor, device
     return x_out.type_as(x).to(device)
 
 
-class RSMNorm(nn.Module):
+class RMSNorm(nn.Module):
 
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
@@ -156,7 +156,7 @@ class EncoderBlock(nn.Module):
         self.attention = SelfAttention(args)
         self.feed_forward = FeedForward(args)
 
-        self.attention_norm = RSMNorm(args.dim, eps=args.norm_eps)
+        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
     def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor):
