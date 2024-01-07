@@ -24,9 +24,9 @@ class ModelArgs:
 
 def precompute_theta_pos_frequencies(head_dim: int, seq_len: int, device, theta: float = 10_000.0):
     assert head_dim % 2 == 0, 'Dimension must be divisible by 2'
-    theta_numerator = torch.arrange(0, head_dim, 2).float()
+    theta_numerator = torch.arange(0, head_dim, 2).float()
     theta = 1.0 / (theta ** (theta_numerator / head_dim)).to(device)
-    m = torch.arrange(0, seq_len).to(device)
+    m = torch.arange(0, seq_len).to(device)
     freqs = torch.outer(m, theta)
     freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_complex
