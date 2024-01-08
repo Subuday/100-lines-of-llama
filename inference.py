@@ -108,7 +108,6 @@ class LLaMa:
     def _sample_top_p(self, probs, p):
         probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
         probs_sum = torch.cumsum(probs_sort, dim=-1)
-        # TODO: Investigate this
         mask = probs_sum - probs_sort > p
         probs_sort[mask] = 0
         probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
